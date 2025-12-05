@@ -1,0 +1,24 @@
+# Beads database (don't commit, only JSONL)
+.beads/beads.db
+.beads/daemon.log
+.beads/daemon.lock
+.beads/bd.sock*
+
+# Temporary files
+*.log
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test artifacts
+test-project/
+tmp/
