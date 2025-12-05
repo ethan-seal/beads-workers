@@ -1,0 +1,261 @@
+#!/bin/bash
+# Mock agent for testing beads-workers without actual Claude Code
+# Simulates agent behavior with configurable scenarios
+
+set -e
+
+VERSION="1.0.0"
+MOCK_MODE="${BEADS_MOCK_MODE:-realistic}"  # realistic, fast, error, timeout
+
+# Mock agent types
+AGENT_TYPES=("general-purpose" "Explore" "Plan" "code-reviewer")
+
+# Simulated tool calls
+MOCK_TOOLS=("Read" "Edit" "Write" "Grep" "Glob" "Bash" "Task")
+
+# Colors for output
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+log_agent() {
+    echo -e "${CYAN}[Agent $1]${NC} $2"
+}
+
+log_tool() {
+    echo -e "${MAGENTA}[Tool: $1]${NC} $2"
+}
+
+log_thinking() {
+    echo -e "${YELLOW}[Thinking]${NC} $1"
+}
+
+# Simulate reading a file
+mock_read() {
+    local file=$1
+    log_tool "Read" "Reading $file..."
+    sleep 0.5
+    echo "    1→  function processTask(id) {"
+    echo "    2→    // TODO: implement"
+    echo "    3→  }"
+}
+
+# Simulate editing a file
+mock_edit() {
+    local file=$1
+    log_tool "Edit" "Editing $file..."
+    sleep 1
+    echo "✓ Applied edit to $file"
+}
+
+# Simulate searching code
+mock_grep() {
+    local pattern=$1
+    log_tool "Grep" "Searching for '$pattern'..."
+    sleep 0.3
+    echo "src/main.sh:45:  function $pattern() {"
+    echo "src/utils.sh:12:  # Call $pattern here"
+}
+
+# Simulate finding files
+mock_glob() {
+    local pattern=$1
+    log_tool "Glob" "Finding files matching '$pattern'..."
+    sleep 0.2
+    echo "src/main.sh"
+    echo "src/utils.sh"
+    echo "src/worker.sh"
+}
+
+# Simulate bash command
+mock_bash() {
+    local cmd=$1
+    log_tool "Bash" "Running: $cmd"
+    sleep 0.5
+    echo "Command output: success"
+}
+
+# Simulate spawning a sub-agent
+mock_task() {
+    local agent_type=$1
+    log_tool "Task" "Spawning $agent_type agent..."
+    sleep 2
+    echo "Sub-agent completed: Found 3 relevant files"
+}
+
+# Main agent simulation
+simulate_agent() {
+    local issue_id=$1
+    local issue_title=$2
+    local agent_type=${3:-general-purpose}
+
+    log_agent "$agent_type" "Starting work on $issue_id"
+    log_agent "$agent_type" "Issue: $issue_title"
+    echo ""
+
+    case "$MOCK_MODE" in
+        fast)
+            # Quick simulation for testing dashboard
+            log_thinking "Analyzing issue..."
+            sleep 1
+            mock_grep "processTask"
+            sleep 0.5
+            mock_edit "src/main.sh"
+            sleep 0.5
+            log_agent "$agent_type" "✓ Completed successfully"
+            ;;
+
+        realistic)
+            # Realistic simulation with multiple tools
+            log_thinking "Let me explore the codebase first..."
+            sleep 1
+            mock_glob "**/*.sh"
+            echo ""
+
+            log_thinking "Now I'll search for relevant functions..."
+            sleep 1
+            mock_grep "handle.*task"
+            echo ""
+
+            log_thinking "Reading the main file to understand the context..."
+            sleep 2
+            mock_read "src/main.sh"
+            echo ""
+
+            log_thinking "I need to understand the worker process better..."
+            sleep 1
+            mock_read "src/worker.sh"
+            echo ""
+
+            log_thinking "Now I'll make the necessary changes..."
+            sleep 2
+            mock_edit "src/main.sh"
+            echo ""
+
+            log_thinking "Let me verify the changes..."
+            sleep 1
+            mock_bash "shellcheck src/main.sh"
+            echo ""
+
+            log_agent "$agent_type" "✓ Completed successfully"
+            log_agent "$agent_type" "Summary: Fixed the task handling logic in src/main.sh"
+            ;;
+
+        explore)
+            # Exploration-heavy simulation
+            log_thinking "This requires thorough exploration..."
+            sleep 1
+            mock_task "Explore"
+            echo ""
+
+            log_thinking "Based on exploration, I found the issue..."
+            sleep 1
+            mock_grep "error_handler"
+            echo ""
+
+            mock_read "src/error.sh"
+            sleep 2
+            mock_edit "src/error.sh"
+            echo ""
+
+            log_agent "$agent_type" "✓ Completed successfully"
+            ;;
+
+        error)
+            # Simulate an agent error
+            log_thinking "Analyzing issue..."
+            sleep 1
+            mock_grep "nonexistent_function"
+            echo ""
+
+            log_agent "$agent_type" "✗ ERROR: Could not find the relevant code"
+            log_agent "$agent_type" "I searched for 'nonexistent_function' but found no matches"
+            exit 1
+            ;;
+
+        timeout)
+            # Simulate a long-running agent (for timeout testing)
+            log_thinking "This is a complex issue, let me investigate thoroughly..."
+
+            for i in {1..30}; do
+                sleep 2
+                log_thinking "Still analyzing... (step $i/30)"
+                mock_grep "pattern_$i"
+            done
+            ;;
+
+        mixed)
+            # Random behavior for variety
+            local rand=$((RANDOM % 4))
+            case $rand in
+                0) simulate_agent "$issue_id" "$issue_title" "$agent_type" "fast" ;;
+                1) simulate_agent "$issue_id" "$issue_title" "$agent_type" "realistic" ;;
+                2) simulate_agent "$issue_id" "$issue_title" "$agent_type" "explore" ;;
+                3) simulate_agent "$issue_id" "$issue_title" "$agent_type" "error" ;;
+            esac
+            ;;
+    esac
+}
+
+# Main entry point
+main() {
+    local issue_id=${1:-beads-workers-test}
+    local issue_title=${2:-"Test issue for agent simulation"}
+    local agent_type=${3:-general-purpose}
+
+    echo ""
+    log_agent "$agent_type" "Mock Agent v$VERSION"
+    log_agent "$agent_type" "Mode: $MOCK_MODE"
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+
+    simulate_agent "$issue_id" "$issue_title" "$agent_type"
+
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+}
+
+# Help text
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+    cat << 'EOF'
+Mock Agent for beads-workers Testing
+
+Usage:
+  test-agent-mock [issue_id] [issue_title] [agent_type]
+  test-agent-mock --help
+
+Environment Variables:
+  BEADS_MOCK_MODE    Simulation mode (default: realistic)
+    - fast:       Quick simulation (1-2s total)
+    - realistic:  Realistic agent behavior (10-15s)
+    - explore:    Exploration-heavy workflow
+    - error:      Simulate agent failure
+    - timeout:    Simulate long-running agent (60s+)
+    - mixed:      Random behavior for variety
+
+Examples:
+  # Default realistic mode
+  ./test-agent-mock beads-workers-123 "Fix bug in worker"
+
+  # Fast mode for quick testing
+  BEADS_MOCK_MODE=fast ./test-agent-mock
+
+  # Simulate errors
+  BEADS_MOCK_MODE=error ./test-agent-mock
+
+  # Mixed random behavior
+  BEADS_MOCK_MODE=mixed ./test-agent-mock
+
+  # Different agent types
+  ./test-agent-mock beads-123 "Explore codebase" Explore
+  ./test-agent-mock beads-456 "Plan feature" Plan
+
+EOF
+    exit 0
+fi
+
+main "$@"
