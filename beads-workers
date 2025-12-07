@@ -106,38 +106,15 @@ worker_process() {
         fi
 
         # Extract issue IDs
-        mapfile -t all_issue_ids < <(echo "$ready_output" | grep -oP '\w+-\w+-[a-z0-9]{3}' || true)
+        mapfile -t issue_ids < <(echo "$ready_output" | grep -oP '\w+-\w+-[a-z0-9]{3}' || true)
 
-        if [ ${#all_issue_ids[@]} -eq 0 ]; then
+        if [ ${#issue_ids[@]} -eq 0 ]; then
             log "Could not parse issue IDs, waiting 30s..."
             sleep 30
             continue
         fi
 
-        # Filter out issues with dependents (parent epics/containers)
-        # Issues with dependents have child tasks that depend on them
-        # These should only be closed when all their dependents are complete
-        issue_ids=()
-        for candidate_id in "${all_issue_ids[@]}"; do
-            # Get dependent count - issues with ANY dependents are parent containers
-            dependent_count=$(bd list --json 2>/dev/null | jq -r ".[] | select(.id == \"$candidate_id\") | .dependent_count // 0")
-
-            # Skip issues with any dependents (they're parent containers, not leaf work)
-            if [ "$dependent_count" -gt 0 ]; then
-                log "Filtering out parent container $candidate_id (has $dependent_count open dependents)"
-            else
-                issue_ids+=("$candidate_id")
-            fi
-        done
-
-        # Check if any leaf tasks are available
-        if [ ${#issue_ids[@]} -eq 0 ]; then
-            log "Only parent containers available (no leaf tasks ready), waiting 30s..."
-            sleep 30
-            continue
-        fi
-
-        # Pick random issue from non-epic issues
+        # Pick random issue
         random_index=$((RANDOM % ${#issue_ids[@]}))
         issue_id="${issue_ids[$random_index]}"
 
