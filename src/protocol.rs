@@ -227,6 +227,9 @@ pub fn validate_worker_message(message: &WorkerMessage) -> ProtocolResult<()> {
         WorkerMessage::Ready { .. } => {
             // READY messages are simple, no additional validation needed
         }
+        WorkerMessage::Heartbeat { .. } => {
+            // HEARTBEAT messages are simple, no additional validation needed
+        }
     }
 
     Ok(())
