@@ -147,14 +147,35 @@ worker_process() {
         log "Issue details:"
         bd show "$issue_id" 2>&1
 
-        # Simulate work (replace with actual work)
-        work_time=$((10 + RANDOM % 20))
-        log "Working on $issue_id for ${work_time}s..."
-        sleep "$work_time"
+        # Get issue details for Claude
+        issue_data=$(bd show "$issue_id" --json 2>/dev/null | jq -r '.[0]')
+        issue_title=$(echo "$issue_data" | jq -r '.title')
+        issue_desc=$(echo "$issue_data" | jq -r '.description // ""')
+
+        # Call Claude Code to work on the issue
+        log "Invoking Claude Code for $issue_id..."
+
+        # Create prompt for Claude
+        claude_prompt="Work on beads issue $issue_id:
+
+Title: $issue_title
+Description: $issue_desc
+
+Please implement this task, test it if applicable, and commit your changes when done. Reply with a summary of what you did."
+
+        # Invoke Claude Code
+        if echo "$claude_prompt" | claude 2>&1 | tee -a "$log_file"; then
+            log "Claude Code completed work on $issue_id"
+        else
+            log "Claude Code failed or was interrupted for $issue_id"
+            # Don't close the issue if Claude failed
+            bd update "$issue_id" --status=open 2>&1
+            continue
+        fi
 
         # Close the issue
         log "Closing issue: $issue_id"
-        bd close "$issue_id" --reason="Completed by worker $worker_id" 2>&1
+        bd close "$issue_id" --reason="Completed by worker $worker_id via Claude Code" 2>&1
 
         log "Issue $issue_id completed, looking for next task..."
 
