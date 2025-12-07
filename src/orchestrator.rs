@@ -586,7 +586,7 @@ mod tests {
             ..Default::default()
         };
 
-        let mut orch = Orchestrator::new(config).await.unwrap();
+        let mut orch = Orchestrator::new(config, temp_dir.path()).await.unwrap();
         let task = Task::new("issue-123".to_string(), 1, "Test task".to_string());
 
         orch.add_task(task);
@@ -603,7 +603,7 @@ mod tests {
             ..Default::default()
         };
 
-        let orch = Orchestrator::new(config).await.unwrap();
+        let orch = Orchestrator::new(config, temp_dir.path()).await.unwrap();
         let stats = orch.stats();
 
         assert_eq!(stats.total_workers, 0);

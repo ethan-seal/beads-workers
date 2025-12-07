@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Beads issue representation from `bd ready --json`
 #[derive(Debug, Clone, Deserialize)]

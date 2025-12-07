@@ -942,6 +942,9 @@ mod tests {
             default_wait_seconds: 15,
             worker_idle_timeout: 120,
             shutdown_timeout: 30,
+            worker_stale_timeout: 300,
+            stale_check_interval: 30,
+            poll_interval_seconds: 60,
         };
 
         assert_eq!(config.socket_path, "/tmp/test.sock");
@@ -949,6 +952,7 @@ mod tests {
         assert_eq!(config.default_wait_seconds, 15);
         assert_eq!(config.worker_idle_timeout, 120);
         assert_eq!(config.shutdown_timeout, 30);
+        assert_eq!(config.worker_stale_timeout, 300);
     }
 
     #[test]
@@ -999,6 +1003,152 @@ mod tests {
         for (reason, expected_str) in reasons {
             let json = serde_json::to_string(&reason).unwrap();
             assert!(json.contains(expected_str));
+        }
+    }
+
+    #[test]
+    fn test_worker_heartbeat_update() {
+        let mut info = WorkerInfo::new("W1".to_string());
+        let initial_heartbeat = info.last_heartbeat;
+
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        info.update_heartbeat();
+
+        assert!(info.last_heartbeat > initial_heartbeat);
+        assert!(info.last_seen > initial_heartbeat);
+    }
+
+    #[test]
+    fn test_worker_is_stale() {
+        let mut info = WorkerInfo::new("W1".to_string());
+
+        // Not stale immediately after creation
+        assert!(!info.is_stale(10));
+
+        // Manually set last_heartbeat to be old
+        info.last_heartbeat = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 100; // 100 seconds ago
+
+        // Should be stale with 50 second timeout
+        assert!(info.is_stale(50));
+
+        // Should not be stale with 200 second timeout
+        assert!(!info.is_stale(200));
+
+        // Timeout of 0 means disabled
+        assert!(!info.is_stale(0));
+    }
+
+    #[test]
+    fn test_worker_seconds_since_heartbeat() {
+        let mut info = WorkerInfo::new("W1".to_string());
+
+        // Should be close to 0 immediately
+        assert!(info.seconds_since_heartbeat() < 2);
+
+        // Manually set old heartbeat
+        info.last_heartbeat = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - 50; // 50 seconds ago
+
+        let elapsed = info.seconds_since_heartbeat();
+        assert!(elapsed >= 50 && elapsed <= 52);
+    }
+
+    #[test]
+    fn test_worker_registry_find_stale_workers() {
+        let mut registry = WorkerRegistry::new();
+
+        let w1 = registry.register();
+        let w2 = registry.register();
+        let w3 = registry.register();
+
+        // Make w2 stale by setting old heartbeat
+        if let Some(worker) = registry.get_mut(&w2) {
+            worker.last_heartbeat = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                - 100; // 100 seconds ago
+        }
+
+        let stale = registry.find_stale_workers(50);
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0], w2);
+
+        // With higher timeout, none should be stale
+        let stale = registry.find_stale_workers(200);
+        assert_eq!(stale.len(), 0);
+
+        // With disabled timeout (0), none should be stale
+        let stale = registry.find_stale_workers(0);
+        assert_eq!(stale.len(), 0);
+    }
+
+    #[test]
+    fn test_worker_registry_disconnected_workers() {
+        let mut registry = WorkerRegistry::new();
+
+        let w1 = registry.register();
+        let w2 = registry.register();
+        let w3 = registry.register();
+
+        // Mark w2 as disconnected
+        if let Some(worker) = registry.get_mut(&w2) {
+            worker.state = WorkerState::Disconnected;
+        }
+
+        let disconnected: Vec<_> = registry.disconnected_workers().collect();
+        assert_eq!(disconnected.len(), 1);
+        assert_eq!(disconnected[0].worker_id, w2);
+    }
+
+    #[test]
+    fn test_worker_registry_cleanup_disconnected() {
+        let mut registry = WorkerRegistry::new();
+
+        let w1 = registry.register();
+        let w2 = registry.register();
+        let w3 = registry.register();
+
+        // Mark w1 and w3 as disconnected
+        if let Some(worker) = registry.get_mut(&w1) {
+            worker.state = WorkerState::Disconnected;
+        }
+        if let Some(worker) = registry.get_mut(&w3) {
+            worker.state = WorkerState::Disconnected;
+        }
+
+        assert_eq!(registry.count(), 3);
+
+        let removed = registry.cleanup_disconnected();
+        assert_eq!(removed.len(), 2);
+        assert!(removed.contains(&w1));
+        assert!(removed.contains(&w3));
+        assert_eq!(registry.count(), 1);
+
+        // Only w2 should remain
+        assert!(registry.get(&w2).is_some());
+        assert!(registry.get(&w1).is_none());
+        assert!(registry.get(&w3).is_none());
+    }
+
+    #[test]
+    fn test_worker_message_heartbeat() {
+        let msg = WorkerMessage::heartbeat("W1".to_string());
+        assert_eq!(msg.worker_id(), "W1");
+        assert!(msg.timestamp() > 0.0);
+
+        match msg {
+            WorkerMessage::Heartbeat { worker_id, .. } => {
+                assert_eq!(worker_id, "W1");
+            }
+            _ => panic!("Expected Heartbeat variant"),
         }
     }
 }

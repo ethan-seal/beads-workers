@@ -24,14 +24,18 @@ async fn main() -> anyhow::Result<()> {
         default_wait_seconds: 30,
         worker_idle_timeout: 0,
         shutdown_timeout: 10,
+        worker_stale_timeout: 300,
+        stale_check_interval: 30,
+        poll_interval_seconds: 30,
     };
 
     println!("Socket path: {}", config.socket_path);
     println!("Max workers: {}", config.max_workers);
     println!();
 
-    // Create orchestrator
-    let mut orchestrator = Orchestrator::new(config).await?;
+    // Create orchestrator (using current directory as beads_dir for demo)
+    let beads_dir = std::env::current_dir()?;
+    let mut orchestrator = Orchestrator::new(config, &beads_dir).await?;
     let shutdown_handle = orchestrator.shutdown_handle();
 
     println!("Orchestrator created successfully");
