@@ -548,4 +548,292 @@ mod tests {
         assert_eq!(envelope.version(), PROTOCOL_VERSION);
         assert!(envelope.validate_version().is_ok());
     }
+
+    #[test]
+    fn test_validate_empty_error_in_failed_message() {
+        let msg = WorkerMessage::failed(
+            "W1".to_string(),
+            "issue-123".to_string(),
+            "".to_string(),
+            1000,
+        );
+        let result = validate_worker_message(&msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("error cannot be empty"));
+    }
+
+    #[test]
+    fn test_validate_empty_title_in_task_message() {
+        let msg = OrchestratorMessage::task(
+            "W1".to_string(),
+            "issue-123".to_string(),
+            2,
+            "".to_string(),
+        );
+        let result = validate_orchestrator_message(&msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("title cannot be empty"));
+    }
+
+    #[test]
+    fn test_validate_empty_issue_id_in_task_message() {
+        let msg = OrchestratorMessage::task(
+            "W1".to_string(),
+            "".to_string(),
+            2,
+            "Test".to_string(),
+        );
+        let result = validate_orchestrator_message(&msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("issue_id cannot be empty"));
+    }
+
+    #[test]
+    fn test_serialize_all_orchestrator_message_types() {
+        let messages = vec![
+            OrchestratorMessage::task(
+                "W1".to_string(),
+                "issue-123".to_string(),
+                3,
+                "Task".to_string(),
+            ),
+            OrchestratorMessage::wait("W1".to_string(), 45),
+            OrchestratorMessage::shutdown("W1".to_string(), ShutdownReason::IdleTimeout),
+        ];
+
+        for msg in messages {
+            let bytes = serialize_orchestrator_message(&msg).unwrap();
+            assert!(bytes.len() > 0);
+            let deserialized = deserialize_orchestrator_message(&bytes).unwrap();
+            assert_eq!(msg.worker_id(), deserialized.worker_id());
+        }
+    }
+
+    #[test]
+    fn test_protocol_error_display() {
+        let errors = vec![
+            ProtocolError::MessageTooLarge { size: 2000, max: 1000 },
+            ProtocolError::VersionMismatch { expected: 1, actual: 2 },
+            ProtocolError::ValidationError("test error".to_string()),
+            ProtocolError::UnexpectedMessageType("UNKNOWN".to_string()),
+            ProtocolError::WorkerIdMismatch {
+                expected: "W1".to_string(),
+                actual: "W2".to_string(),
+            },
+            ProtocolError::ConnectionClosed,
+            ProtocolError::Timeout,
+        ];
+
+        for error in errors {
+            let display = format!("{}", error);
+            assert!(display.len() > 0);
+        }
+    }
+
+    #[test]
+    fn test_max_message_size_constant() {
+        assert_eq!(MAX_MESSAGE_SIZE, 1_048_576);
+    }
+
+    #[test]
+    fn test_protocol_version_constant() {
+        assert_eq!(PROTOCOL_VERSION, 1);
+    }
+
+    #[test]
+    fn test_deserialize_invalid_json() {
+        let invalid_json = b"{ invalid json }";
+        let result = deserialize_worker_message(invalid_json);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ProtocolError::JsonError(_) => {}
+            e => panic!("Expected JsonError, got {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_validate_future_timestamp() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Create a message with a timestamp far in the future
+        let future_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            + 120.0; // 2 minutes in the future
+
+        let msg = WorkerMessage::Ready {
+            worker_id: "W1".to_string(),
+            timestamp: future_timestamp,
+        };
+
+        let result = validate_worker_message(&msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too far in the future"));
+    }
+
+    #[test]
+    fn test_validate_old_timestamp() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        // Create a message with a timestamp from 2 hours ago
+        let old_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            - 7200.0;
+
+        let msg = WorkerMessage::Ready {
+            worker_id: "W1".to_string(),
+            timestamp: old_timestamp,
+        };
+
+        let result = validate_worker_message(&msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too old"));
+    }
+
+    #[test]
+    fn test_create_and_serialize_all_message_types() {
+        // Test worker messages
+        let worker_messages = vec![
+            WorkerMessage::ready("W1".to_string()),
+            WorkerMessage::done("W1".to_string(), "issue-123".to_string(), 1500),
+            WorkerMessage::failed(
+                "W1".to_string(),
+                "issue-456".to_string(),
+                "Error occurred".to_string(),
+                2500,
+            ),
+        ];
+
+        for msg in worker_messages {
+            let result = create_and_serialize_worker_message(msg);
+            assert!(result.is_ok());
+        }
+
+        // Test orchestrator messages
+        let orchestrator_messages = vec![
+            OrchestratorMessage::task(
+                "W1".to_string(),
+                "issue-123".to_string(),
+                1,
+                "Task title".to_string(),
+            ),
+            OrchestratorMessage::wait("W1".to_string(), 60),
+            OrchestratorMessage::shutdown("W1".to_string(), ShutdownReason::Error),
+        ];
+
+        for msg in orchestrator_messages {
+            let result = create_and_serialize_orchestrator_message(msg);
+            assert!(result.is_ok());
+        }
+    }
+
+    #[test]
+    fn test_message_size_boundary() {
+        // Create a message that's close to but under the limit
+        let large_but_valid_error = "x".repeat(MAX_MESSAGE_SIZE / 2);
+        let msg = WorkerMessage::failed(
+            "W1".to_string(),
+            "issue-123".to_string(),
+            large_but_valid_error,
+            1000,
+        );
+
+        let result = serialize_worker_message(&msg);
+        // This should succeed if the overall message is under the limit
+        match result {
+            Ok(bytes) => assert!(bytes.len() <= MAX_MESSAGE_SIZE),
+            Err(ProtocolError::MessageTooLarge { .. }) => {
+                // Also acceptable if the serialized form exceeds the limit
+            }
+            Err(e) => panic!("Unexpected error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_envelope_new() {
+        let payload = WorkerMessage::ready("W1".to_string());
+        let envelope = MessageEnvelope::new(payload);
+        assert_eq!(envelope.version, PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn test_round_trip_with_validation() {
+        let msg = WorkerMessage::done("W1".to_string(), "issue-789".to_string(), 2000);
+
+        // Serialize with validation
+        let bytes = create_and_serialize_worker_message(msg.clone()).unwrap();
+
+        // Deserialize with validation
+        let deserialized = deserialize_and_validate_worker_message(&bytes).unwrap();
+
+        assert_eq!(msg.worker_id(), deserialized.worker_id());
+    }
+
+    #[test]
+    fn test_validate_all_priority_values() {
+        for priority in 0..=4 {
+            let msg = OrchestratorMessage::task(
+                "W1".to_string(),
+                "issue-123".to_string(),
+                priority,
+                "Test".to_string(),
+            );
+            assert!(validate_orchestrator_message(&msg).is_ok());
+        }
+
+        // Priority 5 should fail
+        let msg = OrchestratorMessage::task(
+            "W1".to_string(),
+            "issue-123".to_string(),
+            5,
+            "Test".to_string(),
+        );
+        assert!(validate_orchestrator_message(&msg).is_err());
+    }
+
+    #[test]
+    fn test_validate_boundary_wait_seconds() {
+        // Valid wait seconds
+        let msg = OrchestratorMessage::wait("W1".to_string(), 3600);
+        assert!(validate_orchestrator_message(&msg).is_ok());
+
+        // Invalid wait seconds (too large)
+        let msg = OrchestratorMessage::wait("W1".to_string(), 3601);
+        assert!(validate_orchestrator_message(&msg).is_err());
+    }
+
+    #[test]
+    fn test_validate_boundary_duration_ms() {
+        // Valid duration
+        let msg = WorkerMessage::done("W1".to_string(), "issue-123".to_string(), 3_600_000);
+        assert!(validate_worker_message(&msg).is_ok());
+
+        // Invalid duration (too large)
+        let msg = WorkerMessage::done("W1".to_string(), "issue-123".to_string(), 3_600_001);
+        assert!(validate_worker_message(&msg).is_err());
+    }
+
+    #[test]
+    fn test_all_shutdown_reasons() {
+        for reason in [
+            ShutdownReason::UserRequested,
+            ShutdownReason::Error,
+            ShutdownReason::IdleTimeout,
+        ] {
+            let msg = OrchestratorMessage::shutdown("W1".to_string(), reason);
+            let bytes = create_and_serialize_orchestrator_message(msg.clone()).unwrap();
+            let deserialized = deserialize_and_validate_orchestrator_message(&bytes).unwrap();
+
+            match (msg, deserialized) {
+                (
+                    OrchestratorMessage::Shutdown { reason: r1, .. },
+                    OrchestratorMessage::Shutdown { reason: r2, .. },
+                ) => assert_eq!(r1, r2),
+                _ => panic!("Expected Shutdown messages"),
+            }
+        }
+    }
 }

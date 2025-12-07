@@ -69,11 +69,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(msg) => {
             println!("✓ Received message: {:?}", msg);
 
-            // If we got a task assignment, store the worker ID
-            if let Some(worker_id) = msg.worker_id() {
-                client.set_worker_id(worker_id.to_string());
-                println!("Worker ID: {}", worker_id);
-            }
+            // Store the worker ID from the message
+            let worker_id = msg.worker_id();
+            client.set_worker_id(worker_id.to_string());
+            println!("Worker ID: {}", worker_id);
         }
         Err(e) => {
             eprintln!("✗ Failed to receive message: {}", e);

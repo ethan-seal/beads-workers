@@ -769,7 +769,7 @@ mod tests {
 
         let w1 = registry.register();
         let w2 = registry.register();
-        let w3 = registry.register();
+        let _w3 = registry.register();
 
         // Initially all idle
         assert_eq!(registry.idle_workers().count(), 3);
@@ -811,7 +811,7 @@ mod tests {
         let mut info = WorkerInfo::new("W1".to_string());
         let initial_time = info.last_seen;
 
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_secs(1));
         info.update_last_seen();
 
         assert!(info.last_seen > initial_time);
