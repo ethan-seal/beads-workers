@@ -105,8 +105,8 @@ worker_process() {
             continue
         fi
 
-        # Extract issue IDs
-        mapfile -t issue_ids < <(echo "$ready_output" | grep -oP '\w+-\w+-[a-z0-9]{3}' || true)
+        # Extract issue IDs (including suffixes like .3, .21, etc.)
+        mapfile -t issue_ids < <(echo "$ready_output" | grep -oP '\w+-\w+-[a-z0-9]{3}(?:\.\d+)?' || true)
 
         if [ ${#issue_ids[@]} -eq 0 ]; then
             log "Could not parse issue IDs, waiting 30s..."
