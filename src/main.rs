@@ -70,7 +70,7 @@ async fn main() -> Result<()> {
 
         Commands::Watch { interval } => {
             info!("Starting live dashboard (interval={}s)", interval);
-            let mut dashboard = Dashboard::new(interval);
+            let mut dashboard = Dashboard::new(interval, &beads_dir, config.clone());
             dashboard.run().await?;
         }
 

@@ -751,4 +751,99 @@ mod tests {
         assert_eq!(config.queue_size, deserialized.queue_size);
         assert_eq!(config.prefetch, deserialized.prefetch);
     }
+
+    #[test]
+    fn test_config_full_serialization_round_trip() {
+        let mut config = Config::default();
+        config.max_workers = 8;
+        config.db_path = Some(PathBuf::from("/custom/db"));
+        config.jsonl_path = Some(PathBuf::from("/custom/jsonl"));
+        config.retry.max_retries = 5;
+        config.logging.level = "debug".to_string();
+
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let deserialized: Config = serde_yaml::from_str(&yaml).unwrap();
+
+        assert_eq!(config.max_workers, deserialized.max_workers);
+        assert_eq!(config.db_path, deserialized.db_path);
+        assert_eq!(config.jsonl_path, deserialized.jsonl_path);
+        assert_eq!(config.retry.max_retries, deserialized.retry.max_retries);
+        assert_eq!(config.logging.level, deserialized.logging.level);
+    }
+
+    #[test]
+    fn test_validate_all_log_levels() {
+        let valid_levels = ["trace", "debug", "info", "warn", "error"];
+
+        for level in valid_levels {
+            let mut config = Config::default();
+            config.logging.level = level.to_string();
+            assert!(config.validate().is_ok(), "Level {} should be valid", level);
+        }
+    }
+
+    #[test]
+    fn test_validate_all_log_formats() {
+        let valid_formats = ["pretty", "json", "compact"];
+
+        for format in valid_formats {
+            let mut config = Config::default();
+            config.logging.format = format.to_string();
+            assert!(config.validate().is_ok(), "Format {} should be valid", format);
+        }
+    }
+
+    #[test]
+    fn test_config_defaults_are_valid() {
+        let config = Config::default();
+        assert!(config.validate().is_ok());
+
+        let retry_config = RetryConfig::default();
+        let mut config = Config::default();
+        config.retry = retry_config;
+        assert!(config.validate().is_ok());
+
+        let logging_config = LoggingConfig::default();
+        let mut config = Config::default();
+        config.logging = logging_config;
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_retry_config_boundary_values() {
+        let mut config = Config::default();
+
+        // Test minimum values
+        config.retry.initial_backoff_secs = 1;
+        config.retry.max_backoff_secs = 1;
+        config.retry.backoff_multiplier = 1.0;
+        assert!(config.validate().is_ok());
+
+        // Test large but reasonable values
+        config.retry.max_backoff_secs = 3600; // 1 hour
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_worker_config_prefetch_disabled() {
+        let mut config = Config::default();
+        config.worker.prefetch = false;
+        config.worker.prefetch_count = 0; // Should be OK when prefetch is disabled
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_config_path_helpers() {
+        let config = Config::default();
+        let beads_dir = PathBuf::from("/test/beads");
+
+        // Test all path helpers
+        let db_path = config.get_db_path(&beads_dir);
+        let jsonl_path = config.get_jsonl_path(&beads_dir);
+        let socket_path = config.get_socket_path(&beads_dir);
+
+        assert!(db_path.starts_with("/test/beads"));
+        assert!(jsonl_path.starts_with("/test/beads"));
+        assert!(socket_path.starts_with("/test/beads"));
+    }
 }

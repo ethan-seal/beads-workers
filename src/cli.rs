@@ -229,11 +229,11 @@ mod tests {
         let cli = Cli::parse_from(["beads-workers", "status"]);
         assert_eq!(cli.get_log_level(), "info");
 
-        let cli = Cli::parse_from(["beads-workers", "-v", "status"]);
-        assert_eq!(cli.get_log_level(), "trace");
-
         let cli = Cli::parse_from(["beads-workers", "-d", "status"]);
         assert_eq!(cli.get_log_level(), "debug");
+
+        let cli = Cli::parse_from(["beads-workers", "-v", "status"]);
+        assert_eq!(cli.get_log_level(), "trace");
     }
 
     #[test]

@@ -1019,6 +1019,134 @@ mod tests {
     }
 
     #[test]
+    fn test_task_queue_multiple_priorities() {
+        let mut queue = TaskQueue::new();
+
+        // Add tasks at all priority levels
+        for priority in 0..=4 {
+            queue.push(Task::new(
+                format!("task-p{}", priority),
+                priority,
+                format!("Priority {} task", priority),
+            ));
+        }
+
+        assert_eq!(queue.len(), 5);
+
+        // Should pop in priority order (0 is highest)
+        for priority in 0..=4 {
+            let task = queue.pop().unwrap();
+            assert_eq!(task.issue_id, format!("task-p{}", priority));
+        }
+
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_worker_registry_all_states() {
+        let mut registry = WorkerRegistry::new();
+
+        let w1 = registry.register();
+        let w2 = registry.register();
+        let w3 = registry.register();
+        let w4 = registry.register();
+
+        // Set different states
+        registry.get_mut(&w1).unwrap().state = WorkerState::Idle;
+        registry.get_mut(&w2).unwrap().state = WorkerState::Working;
+        registry.get_mut(&w3).unwrap().state = WorkerState::Waiting;
+        registry.get_mut(&w4).unwrap().state = WorkerState::Disconnected;
+
+        assert_eq!(registry.idle_workers().count(), 1);
+        assert_eq!(registry.working_workers().count(), 1);
+        assert_eq!(registry.disconnected_workers().count(), 1);
+    }
+
+    #[test]
+    fn test_worker_message_all_types() {
+        let messages = vec![
+            WorkerMessage::ready("W1".to_string()),
+            WorkerMessage::done("W1".to_string(), "issue-123".to_string(), 1000),
+            WorkerMessage::failed("W1".to_string(), "issue-456".to_string(), "error".to_string(), 2000),
+            WorkerMessage::heartbeat("W1".to_string()),
+        ];
+
+        for msg in messages {
+            assert_eq!(msg.worker_id(), "W1");
+            assert!(msg.timestamp() > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_orchestrator_message_all_types() {
+        let messages = vec![
+            OrchestratorMessage::task("W1".to_string(), "issue".to_string(), 0, "title".to_string()),
+            OrchestratorMessage::wait("W1".to_string(), 30),
+            OrchestratorMessage::shutdown("W1".to_string(), ShutdownReason::UserRequested),
+        ];
+
+        for msg in messages {
+            assert_eq!(msg.worker_id(), "W1");
+            assert!(msg.timestamp() > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_task_queue_clamping_edge_cases() {
+        let mut queue = TaskQueue::new();
+
+        // Test priority clamping with extreme values
+        queue.push(Task::new("task1".to_string(), 255, "Max u8".to_string()));
+        queue.push(Task::new("task2".to_string(), 100, "Large value".to_string()));
+
+        // Both should be clamped to priority 4
+        let task1 = queue.pop().unwrap();
+        let task2 = queue.pop().unwrap();
+
+        // Order within same priority is FIFO
+        assert_eq!(task1.issue_id, "task1");
+        assert_eq!(task2.issue_id, "task2");
+    }
+
+    #[test]
+    fn test_worker_registry_get_nonexistent() {
+        let registry = WorkerRegistry::new();
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_worker_registry_unregister_nonexistent() {
+        let mut registry = WorkerRegistry::new();
+        let result = registry.unregister("nonexistent");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_worker_info_consecutive_operations() {
+        let mut info = WorkerInfo::new("W1".to_string());
+
+        // Multiple task completions
+        for i in 0..5 {
+            info.assign_task(format!("task-{}", i));
+            assert_eq!(info.state, WorkerState::Working);
+            info.complete_task();
+            assert_eq!(info.state, WorkerState::Idle);
+        }
+
+        assert_eq!(info.tasks_completed, 5);
+        assert_eq!(info.tasks_failed, 0);
+
+        // Multiple task failures
+        for i in 0..3 {
+            info.assign_task(format!("task-{}", i));
+            info.fail_task();
+        }
+
+        assert_eq!(info.tasks_completed, 5);
+        assert_eq!(info.tasks_failed, 3);
+    }
+
+    #[test]
     fn test_worker_is_stale() {
         let mut info = WorkerInfo::new("W1".to_string());
 

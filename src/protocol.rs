@@ -820,6 +820,88 @@ mod tests {
     }
 
     #[test]
+    fn test_serialization_consistency() {
+        let msg = WorkerMessage::ready("W1".to_string());
+
+        // Serialize twice and ensure consistency
+        let bytes1 = serialize_worker_message(&msg).unwrap();
+        let bytes2 = serialize_worker_message(&msg).unwrap();
+
+        // Deserialize both and compare
+        let deser1 = deserialize_worker_message(&bytes1).unwrap();
+        let deser2 = deserialize_worker_message(&bytes2).unwrap();
+
+        assert_eq!(deser1.worker_id(), deser2.worker_id());
+    }
+
+    #[test]
+    fn test_message_envelope_structure() {
+        let msg = WorkerMessage::ready("W1".to_string());
+        let bytes = serialize_worker_message(&msg).unwrap();
+
+        // Verify JSON structure
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(json.get("version").is_some());
+        assert!(json.get("payload").is_some());
+
+        let payload = json.get("payload").unwrap();
+        assert!(payload.get("type").is_some());
+        assert_eq!(payload.get("type").unwrap().as_str().unwrap(), "READY");
+    }
+
+    #[test]
+    fn test_validate_worker_message_heartbeat() {
+        let msg = WorkerMessage::heartbeat("W1".to_string());
+        assert!(validate_worker_message(&msg).is_ok());
+    }
+
+    #[test]
+    fn test_round_trip_with_large_error_message() {
+        let large_error = "Error: ".to_string() + &"x".repeat(1000);
+        let msg = WorkerMessage::failed(
+            "W1".to_string(),
+            "issue-123".to_string(),
+            large_error.clone(),
+            1000,
+        );
+
+        let bytes = serialize_worker_message(&msg).unwrap();
+        let deserialized = deserialize_worker_message(&bytes).unwrap();
+
+        match deserialized {
+            WorkerMessage::Failed { error, .. } => {
+                assert_eq!(error, large_error);
+            }
+            _ => panic!("Expected Failed message"),
+        }
+    }
+
+    #[test]
+    fn test_all_orchestrator_shutdown_reasons() {
+        for reason in [
+            ShutdownReason::UserRequested,
+            ShutdownReason::Error,
+            ShutdownReason::IdleTimeout,
+        ] {
+            let msg = OrchestratorMessage::shutdown("W1".to_string(), reason);
+            let bytes = serialize_orchestrator_message(&msg).unwrap();
+            let deserialized = deserialize_orchestrator_message(&bytes).unwrap();
+
+            assert!(validate_orchestrator_message(&deserialized).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_protocol_version_in_serialized_data() {
+        let msg = WorkerMessage::ready("W1".to_string());
+        let bytes = serialize_worker_message(&msg).unwrap();
+
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let version = json.get("version").unwrap().as_u64().unwrap();
+        assert_eq!(version, PROTOCOL_VERSION as u64);
+    }
+
+    #[test]
     fn test_all_shutdown_reasons() {
         for reason in [
             ShutdownReason::UserRequested,
