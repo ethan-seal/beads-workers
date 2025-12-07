@@ -176,7 +176,8 @@ impl Cli {
         if let Some(ref config) = self.config {
             config.clone()
         } else {
-            self.get_beads_dir().join("config.yaml")
+            // Default to .beads-workers.yaml in current directory
+            PathBuf::from(".beads-workers.yaml")
         }
     }
 
@@ -227,7 +228,7 @@ mod tests {
         let cli = Cli::parse_from(["beads-workers", "status"]);
         assert_eq!(
             cli.get_config_path(),
-            PathBuf::from(".beads/config.yaml")
+            PathBuf::from(".beads-workers.yaml")
         );
     }
 }

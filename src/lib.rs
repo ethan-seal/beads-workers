@@ -3,6 +3,7 @@
 pub mod cli;
 pub mod config;
 pub mod types;
+pub mod protocol;
 pub mod worker;
 pub mod executor;
 pub mod ui;
