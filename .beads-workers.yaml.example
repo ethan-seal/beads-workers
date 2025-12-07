@@ -1,0 +1,60 @@
+# Example configuration file for beads-workers
+# Copy this to .beads-workers.yaml and customize as needed
+#
+# Priority: CLI flags > Environment variables > Config file > Defaults
+
+# Maximum number of concurrent workers
+max_workers: 8
+
+# Path to beads database (optional, defaults to .beads/beads.db)
+# db_path: /path/to/beads.db
+
+# Path to beads JSONL file (optional, defaults to .beads/issues.jsonl)
+# jsonl_path: /path/to/issues.jsonl
+
+# Default timeout for tasks in seconds
+default_timeout: 300
+
+# Retry configuration
+retry:
+  # Maximum number of retries for failed tasks
+  max_retries: 3
+  # Initial backoff duration in seconds
+  initial_backoff_secs: 1
+  # Maximum backoff duration in seconds
+  max_backoff_secs: 60
+  # Backoff multiplier (exponential backoff)
+  backoff_multiplier: 2.0
+
+# Logging configuration
+logging:
+  # Log level: trace, debug, info, warn, error
+  level: info
+  # Log format: pretty, json, compact
+  format: pretty
+  # Log file path (optional, logs to stdout if not specified)
+  # file: /path/to/beads-workers.log
+  # Enable ANSI colors in log output
+  colors: true
+
+# IPC configuration
+ipc:
+  # Socket path for IPC communication (optional)
+  # socket_path: /tmp/beads-workers.sock
+  # Enable IPC server
+  enabled: true
+  # Connection timeout in seconds
+  timeout_secs: 30
+
+# Worker configuration
+worker:
+  # Poll interval in milliseconds
+  poll_interval_ms: 100
+  # Maximum task queue size per worker
+  queue_size: 1000
+  # Enable task prefetching
+  prefetch: true
+  # Number of tasks to prefetch
+  prefetch_count: 10
+  # Graceful shutdown timeout in seconds
+  shutdown_timeout_secs: 30

@@ -17,6 +17,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 anyhow = "1.0"
 thiserror = "2.0"
+chrono = { version = "0.4", features = ["serde"] }
+atty = "0.2"
 
 [dev-dependencies]
 tempfile = "3.8"

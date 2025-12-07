@@ -1,10 +1,17 @@
 mod cli;
 mod config;
+mod logs;
+mod status;
+mod types;
+mod ui;
 
 use anyhow::{Context, Result};
 use cli::{Cli, Commands, ConfigAction};
 use config::Config;
+use logs::{get_log_path, LogViewer};
+use std::path::Path;
 use tracing::{debug, info};
+use ui::Dashboard;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -21,8 +28,13 @@ async fn main() -> Result<()> {
     let mut config = Config::load(&config_path)
         .with_context(|| format!("Failed to load config from {:?}", config_path))?;
 
-    // Merge CLI overrides into config
+    // Merge CLI and environment overrides into config
     config.merge_with_cli(&cli);
+
+    // Validate configuration
+    config
+        .validate()
+        .with_context(|| "Configuration validation failed")?;
 
     debug!("Final configuration: {:?}", config);
 
@@ -52,14 +64,13 @@ async fn main() -> Result<()> {
 
         Commands::Status { json, detailed } => {
             info!("Checking worker status (json={}, detailed={})", json, detailed);
-            // TODO: Implement status command
-            println!("Status command not yet implemented");
+            handle_status_command(&beads_dir, &config, json, detailed)?;
         }
 
         Commands::Watch { interval } => {
-            info!("Watching worker status (interval={}s)", interval);
-            // TODO: Implement watch command
-            println!("Watch command not yet implemented");
+            info!("Starting live dashboard (interval={}s)", interval);
+            let mut dashboard = Dashboard::new(interval);
+            dashboard.run().await?;
         }
 
         Commands::Logs {
@@ -72,8 +83,7 @@ async fn main() -> Result<()> {
                 "Viewing logs (lines={}, follow={}, level={:?}, worker={:?})",
                 lines, follow, level, worker
             );
-            // TODO: Implement logs command
-            println!("Logs command not yet implemented");
+            handle_logs_command(&beads_dir, lines, follow, level, worker).await?;
         }
 
         Commands::Exec {
@@ -168,4 +178,61 @@ fn handle_config_command(
     }
 
     Ok(())
+}
+
+async fn handle_logs_command(
+    beads_dir: &Path,
+    lines: usize,
+    follow: bool,
+    level: Option<String>,
+    worker: Option<String>,
+) -> Result<()> {
+    let log_path = get_log_path(beads_dir);
+
+    // Check if log file exists
+    if !log_path.exists() {
+        anyhow::bail!(
+            "Log file not found at {:?}. Is the worker daemon running?",
+            log_path
+        );
+    }
+
+    let viewer = LogViewer::new(log_path)
+        .with_level_filter(level)
+        .with_worker_filter(worker);
+
+    if follow {
+        viewer.follow(lines).await?;
+    } else {
+        viewer.tail(lines)?;
+    }
+
+    Ok(())
+}
+
+fn handle_status_command(
+    beads_dir: &Path,
+    config: &Config,
+    json: bool,
+    detailed: bool,
+) -> Result<()> {
+    match status::check_status(beads_dir, config) {
+        Ok(status_info) => {
+            if json {
+                // Output as JSON
+                let json_str = serde_json::to_string_pretty(&status_info)
+                    .context("Failed to serialize status to JSON")?;
+                println!("{}", json_str);
+            } else {
+                // Output as human-readable format
+                let formatted = status::format_status(&status_info, detailed);
+                println!("{}", formatted);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Error checking status: {}", e);
+            Err(e)
+        }
+    }
 }

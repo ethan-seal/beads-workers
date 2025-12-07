@@ -195,9 +195,13 @@ impl Config {
         Ok(())
     }
 
-    /// Merge configuration with CLI overrides
+    /// Merge configuration with environment variables and CLI overrides
+    /// Priority: CLI flags > Environment variables > Config file > Defaults
     pub fn merge_with_cli(&mut self, cli: &crate::cli::Cli) {
-        // Override max_workers if provided via CLI
+        // Apply environment variable overrides first
+        self.apply_env_overrides();
+
+        // Then apply CLI overrides (highest priority)
         if let Some(max_workers) = cli.max_workers {
             self.max_workers = max_workers;
         }
@@ -205,6 +209,198 @@ impl Config {
         // Override log level if provided via CLI
         let log_level = cli.get_log_level();
         self.logging.level = log_level;
+
+        // Override beads paths if provided
+        if let Some(ref beads_dir) = cli.beads_dir {
+            if self.db_path.is_none() {
+                self.db_path = Some(beads_dir.join("beads.db"));
+            }
+            if self.jsonl_path.is_none() {
+                self.jsonl_path = Some(beads_dir.join("issues.jsonl"));
+            }
+        }
+    }
+
+    /// Apply environment variable overrides
+    fn apply_env_overrides(&mut self) {
+        // Core settings
+        if let Ok(val) = env::var("BEADS_MAX_WORKERS") {
+            if let Ok(n) = val.parse() {
+                self.max_workers = n;
+            }
+        }
+
+        if let Ok(val) = env::var("BEADS_DB_PATH") {
+            self.db_path = Some(PathBuf::from(val));
+        }
+
+        if let Ok(val) = env::var("BEADS_JSONL_PATH") {
+            self.jsonl_path = Some(PathBuf::from(val));
+        }
+
+        if let Ok(val) = env::var("BEADS_DEFAULT_TIMEOUT") {
+            if let Ok(n) = val.parse() {
+                self.default_timeout = Some(n);
+            }
+        }
+
+        // Retry settings
+        if let Ok(val) = env::var("BEADS_MAX_RETRIES") {
+            if let Ok(n) = val.parse() {
+                self.retry.max_retries = n;
+            }
+        }
+
+        if let Ok(val) = env::var("BEADS_INITIAL_BACKOFF_SECS") {
+            if let Ok(n) = val.parse() {
+                self.retry.initial_backoff_secs = n;
+            }
+        }
+
+        if let Ok(val) = env::var("BEADS_MAX_BACKOFF_SECS") {
+            if let Ok(n) = val.parse() {
+                self.retry.max_backoff_secs = n;
+            }
+        }
+
+        if let Ok(val) = env::var("BEADS_BACKOFF_MULTIPLIER") {
+            if let Ok(n) = val.parse() {
+                self.retry.backoff_multiplier = n;
+            }
+        }
+
+        // Logging settings
+        if let Ok(val) = env::var("BEADS_LOG_LEVEL") {
+            self.logging.level = val;
+        }
+
+        if let Ok(val) = env::var("BEADS_LOG_FORMAT") {
+            self.logging.format = val;
+        }
+
+        if let Ok(val) = env::var("BEADS_LOG_FILE") {
+            self.logging.file = Some(PathBuf::from(val));
+        }
+
+        if let Ok(val) = env::var("BEADS_LOG_COLORS") {
+            self.logging.colors = val.parse().unwrap_or(true);
+        }
+
+        // IPC settings
+        if let Ok(val) = env::var("BEADS_IPC_SOCKET_PATH") {
+            self.ipc.socket_path = Some(PathBuf::from(val));
+        }
+
+        if let Ok(val) = env::var("BEADS_IPC_ENABLED") {
+            self.ipc.enabled = val.parse().unwrap_or(true);
+        }
+
+        if let Ok(val) = env::var("BEADS_IPC_TIMEOUT_SECS") {
+            if let Ok(n) = val.parse() {
+                self.ipc.timeout_secs = n;
+            }
+        }
+
+        // Worker settings
+        if let Ok(val) = env::var("BEADS_WORKER_POLL_INTERVAL_MS") {
+            if let Ok(n) = val.parse() {
+                self.worker.poll_interval_ms = n;
+            }
+        }
+
+        if let Ok(val) = env::var("BEADS_WORKER_QUEUE_SIZE") {
+            if let Ok(n) = val.parse() {
+                self.worker.queue_size = n;
+            }
+        }
+
+        if let Ok(val) = env::var("BEADS_WORKER_PREFETCH") {
+            self.worker.prefetch = val.parse().unwrap_or(true);
+        }
+
+        if let Ok(val) = env::var("BEADS_WORKER_PREFETCH_COUNT") {
+            if let Ok(n) = val.parse() {
+                self.worker.prefetch_count = n;
+            }
+        }
+
+        if let Ok(val) = env::var("BEADS_WORKER_SHUTDOWN_TIMEOUT_SECS") {
+            if let Ok(n) = val.parse() {
+                self.worker.shutdown_timeout_secs = n;
+            }
+        }
+    }
+
+    /// Validate the configuration
+    pub fn validate(&self) -> Result<()> {
+        // Validate max_workers
+        if self.max_workers == 0 {
+            bail!("max_workers must be greater than 0");
+        }
+
+        if self.max_workers > 1024 {
+            bail!("max_workers is too large (max: 1024, got: {})", self.max_workers);
+        }
+
+        // Validate retry config
+        if self.retry.initial_backoff_secs == 0 {
+            bail!("retry.initial_backoff_secs must be greater than 0");
+        }
+
+        if self.retry.max_backoff_secs < self.retry.initial_backoff_secs {
+            bail!(
+                "retry.max_backoff_secs ({}) must be >= retry.initial_backoff_secs ({})",
+                self.retry.max_backoff_secs,
+                self.retry.initial_backoff_secs
+            );
+        }
+
+        if self.retry.backoff_multiplier < 1.0 {
+            bail!("retry.backoff_multiplier must be >= 1.0");
+        }
+
+        // Validate logging config
+        let valid_log_levels = ["trace", "debug", "info", "warn", "error"];
+        if !valid_log_levels.contains(&self.logging.level.as_str()) {
+            bail!(
+                "Invalid log level: {}. Valid levels: {:?}",
+                self.logging.level,
+                valid_log_levels
+            );
+        }
+
+        let valid_log_formats = ["pretty", "json", "compact"];
+        if !valid_log_formats.contains(&self.logging.format.as_str()) {
+            bail!(
+                "Invalid log format: {}. Valid formats: {:?}",
+                self.logging.format,
+                valid_log_formats
+            );
+        }
+
+        // Validate IPC config
+        if self.ipc.timeout_secs == 0 {
+            bail!("ipc.timeout_secs must be greater than 0");
+        }
+
+        // Validate worker config
+        if self.worker.poll_interval_ms == 0 {
+            bail!("worker.poll_interval_ms must be greater than 0");
+        }
+
+        if self.worker.queue_size == 0 {
+            bail!("worker.queue_size must be greater than 0");
+        }
+
+        if self.worker.prefetch && self.worker.prefetch_count == 0 {
+            bail!("worker.prefetch_count must be greater than 0 when prefetch is enabled");
+        }
+
+        if self.worker.shutdown_timeout_secs == 0 {
+            bail!("worker.shutdown_timeout_secs must be greater than 0");
+        }
+
+        Ok(())
     }
 
     /// Get the database path, falling back to default
@@ -295,5 +491,264 @@ mod tests {
 
         assert_eq!(config.max_workers, 16);
         assert_eq!(config.logging.level, "trace");
+    }
+
+    #[test]
+    fn test_validate_success() {
+        let config = Config::default();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_zero_workers() {
+        let mut config = Config::default();
+        config.max_workers = 0;
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("must be greater than 0"));
+    }
+
+    #[test]
+    fn test_validate_too_many_workers() {
+        let mut config = Config::default();
+        config.max_workers = 2000;
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too large"));
+    }
+
+    #[test]
+    fn test_validate_invalid_log_level() {
+        let mut config = Config::default();
+        config.logging.level = "invalid".to_string();
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid log level"));
+    }
+
+    #[test]
+    fn test_validate_invalid_backoff() {
+        let mut config = Config::default();
+        config.retry.max_backoff_secs = 1;
+        config.retry.initial_backoff_secs = 10;
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("max_backoff_secs"));
+    }
+
+    #[test]
+    fn test_validate_invalid_backoff_multiplier() {
+        let mut config = Config::default();
+        config.retry.backoff_multiplier = 0.5;
+        let result = config.validate();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("backoff_multiplier"));
+    }
+
+    #[test]
+    fn test_env_override() {
+        use std::sync::Mutex;
+
+        // Use a mutex to prevent test parallelism issues with env vars
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        env::set_var("BEADS_MAX_WORKERS", "42");
+        env::set_var("BEADS_LOG_LEVEL", "debug");
+
+        let mut config = Config::default();
+        config.apply_env_overrides();
+
+        assert_eq!(config.max_workers, 42);
+        assert_eq!(config.logging.level, "debug");
+
+        // Clean up
+        env::remove_var("BEADS_MAX_WORKERS");
+        env::remove_var("BEADS_LOG_LEVEL");
+    }
+
+    #[test]
+    fn test_env_override_paths() {
+        use std::sync::Mutex;
+
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        env::set_var("BEADS_DB_PATH", "/custom/path/db");
+        env::set_var("BEADS_JSONL_PATH", "/custom/path/jsonl");
+
+        let mut config = Config::default();
+        config.apply_env_overrides();
+
+        assert_eq!(config.db_path, Some(PathBuf::from("/custom/path/db")));
+        assert_eq!(config.jsonl_path, Some(PathBuf::from("/custom/path/jsonl")));
+
+        // Clean up
+        env::remove_var("BEADS_DB_PATH");
+        env::remove_var("BEADS_JSONL_PATH");
+    }
+
+    #[test]
+    fn test_priority_cli_over_env() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        use std::sync::Mutex;
+
+        static ENV_LOCK: Mutex<()> = Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap();
+
+        // Set env var
+        env::set_var("BEADS_MAX_WORKERS", "42");
+
+        let mut config = Config::default();
+        let cli = Cli::parse_from(["beads-workers", "-j", "16", "status"]);
+
+        config.merge_with_cli(&cli);
+
+        // CLI should override env
+        assert_eq!(config.max_workers, 16);
+
+        // Clean up
+        env::remove_var("BEADS_MAX_WORKERS");
+    }
+
+    #[test]
+    fn test_validate_zero_initial_backoff() {
+        let mut config = Config::default();
+        config.retry.initial_backoff_secs = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_invalid_log_format() {
+        let mut config = Config::default();
+        config.logging.format = "xml".to_string();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_zero_ipc_timeout() {
+        let mut config = Config::default();
+        config.ipc.timeout_secs = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_zero_poll_interval() {
+        let mut config = Config::default();
+        config.worker.poll_interval_ms = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_zero_queue_size() {
+        let mut config = Config::default();
+        config.worker.queue_size = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_zero_shutdown_timeout() {
+        let mut config = Config::default();
+        config.worker.shutdown_timeout_secs = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_prefetch_with_zero_count() {
+        let mut config = Config::default();
+        config.worker.prefetch = true;
+        config.worker.prefetch_count = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_get_db_path_default() {
+        let config = Config::default();
+        let beads_dir = PathBuf::from("/test/beads");
+        assert_eq!(config.get_db_path(&beads_dir), PathBuf::from("/test/beads/beads.db"));
+    }
+
+    #[test]
+    fn test_get_db_path_override() {
+        let mut config = Config::default();
+        config.db_path = Some(PathBuf::from("/custom/db.sqlite"));
+        let beads_dir = PathBuf::from("/test/beads");
+        assert_eq!(config.get_db_path(&beads_dir), PathBuf::from("/custom/db.sqlite"));
+    }
+
+    #[test]
+    fn test_get_jsonl_path_default() {
+        let config = Config::default();
+        let beads_dir = PathBuf::from("/test/beads");
+        assert_eq!(config.get_jsonl_path(&beads_dir), PathBuf::from("/test/beads/issues.jsonl"));
+    }
+
+    #[test]
+    fn test_get_jsonl_path_override() {
+        let mut config = Config::default();
+        config.jsonl_path = Some(PathBuf::from("/custom/issues.jsonl"));
+        let beads_dir = PathBuf::from("/test/beads");
+        assert_eq!(config.get_jsonl_path(&beads_dir), PathBuf::from("/custom/issues.jsonl"));
+    }
+
+    #[test]
+    fn test_get_socket_path_default() {
+        let config = Config::default();
+        let beads_dir = PathBuf::from("/test/beads");
+        assert_eq!(config.get_socket_path(&beads_dir), PathBuf::from("/test/beads/beads-workers.sock"));
+    }
+
+    #[test]
+    fn test_get_socket_path_override() {
+        let mut config = Config::default();
+        config.ipc.socket_path = Some(PathBuf::from("/custom/socket.sock"));
+        let beads_dir = PathBuf::from("/test/beads");
+        assert_eq!(config.get_socket_path(&beads_dir), PathBuf::from("/custom/socket.sock"));
+    }
+
+    #[test]
+    fn test_num_cpus_sanity() {
+        let cpus = num_cpus();
+        assert!(cpus > 0, "CPU count must be positive");
+        assert!(cpus <= 2048, "CPU count seems unreasonably high");
+    }
+
+    #[test]
+    fn test_retry_config_serialization() {
+        let config = RetryConfig::default();
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let deserialized: RetryConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(config.max_retries, deserialized.max_retries);
+        assert_eq!(config.initial_backoff_secs, deserialized.initial_backoff_secs);
+    }
+
+    #[test]
+    fn test_logging_config_serialization() {
+        let config = LoggingConfig::default();
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let deserialized: LoggingConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(config.level, deserialized.level);
+        assert_eq!(config.format, deserialized.format);
+        assert_eq!(config.colors, deserialized.colors);
+    }
+
+    #[test]
+    fn test_ipc_config_serialization() {
+        let config = IpcConfig::default();
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let deserialized: IpcConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(config.enabled, deserialized.enabled);
+        assert_eq!(config.timeout_secs, deserialized.timeout_secs);
+    }
+
+    #[test]
+    fn test_worker_config_serialization() {
+        let config = WorkerConfig::default();
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let deserialized: WorkerConfig = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(config.poll_interval_ms, deserialized.poll_interval_ms);
+        assert_eq!(config.queue_size, deserialized.queue_size);
+        assert_eq!(config.prefetch, deserialized.prefetch);
     }
 }

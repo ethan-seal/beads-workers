@@ -610,4 +610,307 @@ mod tests {
         assert_eq!(config.max_workers, 10);
         assert_eq!(config.default_wait_seconds, 30);
     }
+
+    #[test]
+    fn test_worker_message_failed() {
+        let msg = WorkerMessage::failed(
+            "W1".to_string(),
+            "issue-123".to_string(),
+            "Connection timeout".to_string(),
+            3000,
+        );
+        assert_eq!(msg.worker_id(), "W1");
+        match msg {
+            WorkerMessage::Failed { issue_id, error, duration_ms, .. } => {
+                assert_eq!(issue_id, "issue-123");
+                assert_eq!(error, "Connection timeout");
+                assert_eq!(duration_ms, 3000);
+            }
+            _ => panic!("Expected Failed variant"),
+        }
+    }
+
+    #[test]
+    fn test_orchestrator_message_wait() {
+        let msg = OrchestratorMessage::wait("W1".to_string(), 60);
+        assert_eq!(msg.worker_id(), "W1");
+        match msg {
+            OrchestratorMessage::Wait { wait_seconds, .. } => {
+                assert_eq!(wait_seconds, 60);
+            }
+            _ => panic!("Expected Wait variant"),
+        }
+    }
+
+    #[test]
+    fn test_orchestrator_message_shutdown() {
+        let msg = OrchestratorMessage::shutdown("W1".to_string(), ShutdownReason::UserRequested);
+        assert_eq!(msg.worker_id(), "W1");
+        match msg {
+            OrchestratorMessage::Shutdown { reason, .. } => {
+                assert_eq!(reason, ShutdownReason::UserRequested);
+            }
+            _ => panic!("Expected Shutdown variant"),
+        }
+    }
+
+    #[test]
+    fn test_shutdown_reasons() {
+        let reasons = vec![
+            ShutdownReason::UserRequested,
+            ShutdownReason::Error,
+            ShutdownReason::IdleTimeout,
+        ];
+        for reason in reasons {
+            let msg = OrchestratorMessage::shutdown("W1".to_string(), reason);
+            match msg {
+                OrchestratorMessage::Shutdown { reason: r, .. } => assert_eq!(r, reason),
+                _ => panic!("Expected Shutdown variant"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_worker_state_transitions() {
+        let states = vec![
+            WorkerState::Idle,
+            WorkerState::Working,
+            WorkerState::Waiting,
+            WorkerState::ShuttingDown,
+            WorkerState::Disconnected,
+        ];
+        for state in states {
+            let mut info = WorkerInfo::new("W1".to_string());
+            info.state = state;
+            assert_eq!(info.state, state);
+        }
+    }
+
+    #[test]
+    fn test_task_new() {
+        let task = Task::new("issue-123".to_string(), 2, "Test task".to_string());
+        assert_eq!(task.issue_id, "issue-123");
+        assert_eq!(task.priority, 2);
+        assert_eq!(task.title, "Test task");
+        assert!(task.queued_at > 0);
+    }
+
+    #[test]
+    fn test_task_queue_fifo_within_priority() {
+        let mut queue = TaskQueue::new();
+
+        // Add multiple tasks with same priority
+        queue.push(Task::new("first".to_string(), 1, "First".to_string()));
+        queue.push(Task::new("second".to_string(), 1, "Second".to_string()));
+        queue.push(Task::new("third".to_string(), 1, "Third".to_string()));
+
+        // Should pop in FIFO order within same priority
+        assert_eq!(queue.pop().unwrap().issue_id, "first");
+        assert_eq!(queue.pop().unwrap().issue_id, "second");
+        assert_eq!(queue.pop().unwrap().issue_id, "third");
+    }
+
+    #[test]
+    fn test_task_queue_priority_clamping() {
+        let mut queue = TaskQueue::new();
+
+        // Priority > 4 should be clamped to 4
+        queue.push(Task::new("task1".to_string(), 10, "High priority".to_string()));
+        queue.push(Task::new("task2".to_string(), 0, "Low priority".to_string()));
+
+        // Task with priority 0 should come first
+        assert_eq!(queue.pop().unwrap().issue_id, "task2");
+        assert_eq!(queue.pop().unwrap().issue_id, "task1");
+    }
+
+    #[test]
+    fn test_task_queue_empty_operations() {
+        let mut queue = TaskQueue::new();
+        assert!(queue.is_empty());
+        assert_eq!(queue.len(), 0);
+        assert!(queue.pop().is_none());
+    }
+
+    #[test]
+    fn test_task_queue_tasks_at_priority() {
+        let mut queue = TaskQueue::new();
+
+        queue.push(Task::new("p0-1".to_string(), 0, "P0 task 1".to_string()));
+        queue.push(Task::new("p0-2".to_string(), 0, "P0 task 2".to_string()));
+        queue.push(Task::new("p2-1".to_string(), 2, "P2 task 1".to_string()));
+
+        let p0_tasks: Vec<_> = queue.tasks_at_priority(0).collect();
+        assert_eq!(p0_tasks.len(), 2);
+
+        let p2_tasks: Vec<_> = queue.tasks_at_priority(2).collect();
+        assert_eq!(p2_tasks.len(), 1);
+
+        let p1_tasks: Vec<_> = queue.tasks_at_priority(1).collect();
+        assert_eq!(p1_tasks.len(), 0);
+    }
+
+    #[test]
+    fn test_worker_registry_multiple_workers() {
+        let mut registry = WorkerRegistry::new();
+
+        let ids: Vec<_> = (0..5).map(|_| registry.register()).collect();
+
+        assert_eq!(registry.count(), 5);
+        assert_eq!(ids, vec!["W1", "W2", "W3", "W4", "W5"]);
+
+        for id in &ids {
+            assert!(registry.get(id).is_some());
+        }
+    }
+
+    #[test]
+    fn test_worker_registry_idle_and_working() {
+        let mut registry = WorkerRegistry::new();
+
+        let w1 = registry.register();
+        let w2 = registry.register();
+        let w3 = registry.register();
+
+        // Initially all idle
+        assert_eq!(registry.idle_workers().count(), 3);
+        assert_eq!(registry.working_workers().count(), 0);
+
+        // Assign task to w1
+        registry.get_mut(&w1).unwrap().assign_task("task-1".to_string());
+
+        assert_eq!(registry.idle_workers().count(), 2);
+        assert_eq!(registry.working_workers().count(), 1);
+
+        // Assign task to w2
+        registry.get_mut(&w2).unwrap().assign_task("task-2".to_string());
+
+        assert_eq!(registry.idle_workers().count(), 1);
+        assert_eq!(registry.working_workers().count(), 2);
+    }
+
+    #[test]
+    fn test_worker_registry_unregister() {
+        let mut registry = WorkerRegistry::new();
+
+        let w1 = registry.register();
+        let w2 = registry.register();
+
+        assert_eq!(registry.count(), 2);
+
+        let removed = registry.unregister(&w1);
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().worker_id, w1);
+        assert_eq!(registry.count(), 1);
+
+        assert!(registry.get(&w1).is_none());
+        assert!(registry.get(&w2).is_some());
+    }
+
+    #[test]
+    fn test_worker_info_update_last_seen() {
+        let mut info = WorkerInfo::new("W1".to_string());
+        let initial_time = info.last_seen;
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        info.update_last_seen();
+
+        assert!(info.last_seen > initial_time);
+    }
+
+    #[test]
+    fn test_worker_info_task_counters() {
+        let mut info = WorkerInfo::new("W1".to_string());
+
+        assert_eq!(info.tasks_completed, 0);
+        assert_eq!(info.tasks_failed, 0);
+
+        info.assign_task("task-1".to_string());
+        info.complete_task();
+        assert_eq!(info.tasks_completed, 1);
+
+        info.assign_task("task-2".to_string());
+        info.fail_task();
+        assert_eq!(info.tasks_failed, 1);
+
+        info.assign_task("task-3".to_string());
+        info.complete_task();
+        assert_eq!(info.tasks_completed, 2);
+        assert_eq!(info.tasks_failed, 1);
+    }
+
+    #[test]
+    fn test_worker_config_default() {
+        let config = WorkerConfig::default();
+        assert!(config.socket_path.is_empty());
+        assert_eq!(config.retry_attempts, 3);
+        assert_eq!(config.retry_delay_seconds, 1);
+    }
+
+    #[test]
+    fn test_orchestrator_config_fields() {
+        let config = OrchestratorConfig {
+            socket_path: "/tmp/test.sock".to_string(),
+            max_workers: 5,
+            default_wait_seconds: 15,
+            worker_idle_timeout: 120,
+            shutdown_timeout: 30,
+        };
+
+        assert_eq!(config.socket_path, "/tmp/test.sock");
+        assert_eq!(config.max_workers, 5);
+        assert_eq!(config.default_wait_seconds, 15);
+        assert_eq!(config.worker_idle_timeout, 120);
+        assert_eq!(config.shutdown_timeout, 30);
+    }
+
+    #[test]
+    fn test_get_timestamp() {
+        let ts1 = get_timestamp();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let ts2 = get_timestamp();
+
+        assert!(ts2 > ts1);
+        assert!(ts2 - ts1 < 1.0); // Should be less than 1 second
+    }
+
+    #[test]
+    fn test_message_json_format() {
+        let msg = WorkerMessage::ready("W1".to_string());
+        let json = serde_json::to_string(&msg).unwrap();
+
+        // Check JSON structure
+        assert!(json.contains("\"type\":\"READY\""));
+        assert!(json.contains("\"worker_id\":\"W1\""));
+        assert!(json.contains("\"timestamp\""));
+    }
+
+    #[test]
+    fn test_orchestrator_message_json_format() {
+        let msg = OrchestratorMessage::task(
+            "W1".to_string(),
+            "issue-123".to_string(),
+            2,
+            "Test".to_string(),
+        );
+        let json = serde_json::to_string(&msg).unwrap();
+
+        assert!(json.contains("\"type\":\"TASK\""));
+        assert!(json.contains("\"worker_id\":\"W1\""));
+        assert!(json.contains("\"issue_id\":\"issue-123\""));
+        assert!(json.contains("\"priority\":2"));
+    }
+
+    #[test]
+    fn test_shutdown_reason_serialization() {
+        let reasons = vec![
+            (ShutdownReason::UserRequested, "user_requested"),
+            (ShutdownReason::Error, "error"),
+            (ShutdownReason::IdleTimeout, "idle_timeout"),
+        ];
+
+        for (reason, expected_str) in reasons {
+            let json = serde_json::to_string(&reason).unwrap();
+            assert!(json.contains(expected_str));
+        }
+    }
 }

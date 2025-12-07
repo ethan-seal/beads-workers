@@ -8,3 +8,5 @@ pub mod worker;
 pub mod executor;
 pub mod ui;
 pub mod ipc;
+pub mod logs;
+pub mod status;
