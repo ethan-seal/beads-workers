@@ -163,8 +163,8 @@ Description: $issue_desc
 
 Please implement this task, test it if applicable, and commit your changes when done. Reply with a summary of what you did."
 
-        # Invoke Claude Code
-        if echo "$claude_prompt" | claude 2>&1 | tee -a "$log_file"; then
+        # Invoke Claude Code with bypass permissions for automated execution
+        if echo "$claude_prompt" | claude --dangerously-skip-permissions 2>&1 | tee -a "$log_file"; then
             log "Claude Code completed work on $issue_id"
         else
             log "Claude Code failed or was interrupted for $issue_id"
