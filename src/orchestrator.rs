@@ -1,6 +1,7 @@
 // Orchestrator main loop and event handling
 
 use crate::server::{ConnectionHandler, UnixSocketServer};
+use crate::task_poller::TaskPoller;
 use crate::types::{
     OrchestratorConfig, OrchestratorMessage, ShutdownReason, Task, TaskQueue, WorkerMessage,
     WorkerRegistry, WorkerState,
@@ -21,6 +22,8 @@ pub struct Orchestrator {
     registry: WorkerRegistry,
     /// Task queue
     task_queue: TaskQueue,
+    /// Task poller for fetching from beads CLI
+    task_poller: TaskPoller,
     /// Channel senders for each worker connection
     worker_channels: HashMap<String, mpsc::UnboundedSender<OrchestratorMessage>>,
     /// Shutdown signal
@@ -30,15 +33,17 @@ pub struct Orchestrator {
 
 impl Orchestrator {
     /// Create a new orchestrator
-    pub async fn new(config: OrchestratorConfig) -> std::io::Result<Self> {
+    pub async fn new(config: OrchestratorConfig, beads_dir: &Path) -> std::io::Result<Self> {
         let server = UnixSocketServer::bind(&config.socket_path).await?;
         let (shutdown_tx, shutdown_rx) = mpsc::channel(1);
+        let task_poller = TaskPoller::new(beads_dir);
 
         Ok(Orchestrator {
             config,
             server,
             registry: WorkerRegistry::new(),
             task_queue: TaskQueue::new(),
+            task_poller,
             worker_channels: HashMap::new(),
             shutdown_rx,
             shutdown_tx,
@@ -71,9 +76,28 @@ impl Orchestrator {
             self.server.socket_path()
         );
         info!("Max workers: {}", self.config.max_workers);
+        info!("Task polling interval: {}s", self.config.poll_interval_seconds);
+        if self.config.worker_stale_timeout > 0 {
+            info!(
+                "Stale worker cleanup enabled: timeout={}s, check_interval={}s",
+                self.config.worker_stale_timeout, self.config.stale_check_interval
+            );
+        }
 
         // Channel for receiving worker messages from all connections
         let (worker_msg_tx, mut worker_msg_rx) = mpsc::unbounded_channel::<WorkerMessageEvent>();
+
+        // Create interval for task polling
+        let mut poll_interval = tokio::time::interval(Duration::from_secs(
+            self.config.poll_interval_seconds,
+        ));
+        poll_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        // Create interval for stale worker checks
+        let mut stale_check_interval = tokio::time::interval(Duration::from_secs(
+            self.config.stale_check_interval,
+        ));
+        stale_check_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         loop {
             tokio::select! {
@@ -102,6 +126,18 @@ impl Orchestrator {
                 // Handle worker messages
                 Some(event) = worker_msg_rx.recv() => {
                     self.handle_worker_message(event).await;
+                }
+
+                // Periodic task polling
+                _ = poll_interval.tick() => {
+                    self.poll_and_queue_tasks().await;
+                }
+
+                // Check for stale workers periodically
+                _ = stale_check_interval.tick() => {
+                    if self.config.worker_stale_timeout > 0 {
+                        self.cleanup_stale_workers().await;
+                    }
                 }
 
                 // Handle shutdown signal
@@ -224,6 +260,9 @@ impl Orchestrator {
                 self.handle_worker_failed(worker_id, &issue_id, &error, duration_ms)
                     .await;
             }
+            WorkerMessage::Heartbeat { .. } => {
+                self.handle_worker_heartbeat(worker_id).await;
+            }
         }
     }
 
@@ -251,6 +290,9 @@ impl Orchestrator {
             worker_id, issue_id, duration_ms
         );
 
+        // Mark task as completed in poller
+        self.task_poller.mark_completed(issue_id);
+
         if let Some(worker) = self.registry.get_mut(worker_id) {
             worker.complete_task();
         }
@@ -277,6 +319,9 @@ impl Orchestrator {
             worker_id, issue_id, duration_ms, error
         );
 
+        // Mark task as failed in poller (allows it to be picked up again)
+        self.task_poller.mark_failed(issue_id);
+
         if let Some(worker) = self.registry.get_mut(worker_id) {
             worker.fail_task();
         }
@@ -290,6 +335,39 @@ impl Orchestrator {
         }
     }
 
+    /// Handle worker heartbeat message
+    async fn handle_worker_heartbeat(&mut self, worker_id: &str) {
+        debug!("Received heartbeat from worker {}", worker_id);
+
+        // Update the last heartbeat timestamp
+        if let Some(worker) = self.registry.get_mut(worker_id) {
+            worker.update_heartbeat();
+        }
+    }
+
+    /// Clean up stale workers that haven't sent heartbeats
+    async fn cleanup_stale_workers(&mut self) {
+        let timeout = self.config.worker_stale_timeout;
+        if timeout == 0 {
+            return; // Stale worker cleanup disabled
+        }
+
+        let stale_workers: Vec<String> = self
+            .registry
+            .all()
+            .filter(|w| w.is_stale(timeout))
+            .map(|w| w.worker_id.clone())
+            .collect();
+
+        for worker_id in stale_workers {
+            warn!(
+                "Worker {} is stale (no heartbeat in {}s), disconnecting",
+                worker_id, timeout
+            );
+            self.handle_worker_disconnect(&worker_id).await;
+        }
+    }
+
     /// Handle worker disconnect
     async fn handle_worker_disconnect(&mut self, worker_id: &str) {
         info!("Worker {} disconnected", worker_id);
@@ -298,7 +376,8 @@ impl Orchestrator {
         if let Some(worker) = self.registry.get_mut(worker_id) {
             if let Some(task_id) = worker.current_task.take() {
                 warn!("Re-queuing task {} from disconnected worker", task_id);
-                // TODO: Re-queue the task (would need to store task details)
+                // Mark task as failed so it can be picked up again in next poll
+                self.task_poller.mark_failed(&task_id);
             }
             worker.state = WorkerState::Disconnected;
         }
@@ -316,6 +395,9 @@ impl Orchestrator {
             "Assigning task {} to worker {} (priority {})",
             task.issue_id, worker_id, task.priority
         );
+
+        // Mark task as in-progress in the poller to prevent duplicates
+        self.task_poller.mark_in_progress(&task.issue_id);
 
         // Update worker state
         if let Some(worker) = self.registry.get_mut(worker_id) {
@@ -353,6 +435,47 @@ impl Orchestrator {
         if let Some(tx) = self.worker_channels.get(worker_id) {
             if let Err(e) = tx.send(msg) {
                 error!("Failed to send WAIT to worker {}: {}", worker_id, e);
+            }
+        }
+    }
+
+    /// Poll for new tasks from beads CLI and add them to the queue
+    async fn poll_and_queue_tasks(&mut self) {
+        debug!("Polling beads CLI for available tasks");
+
+        match self.task_poller.poll() {
+            Ok(tasks) => {
+                if !tasks.is_empty() {
+                    info!("Polled {} new task(s) from beads", tasks.len());
+                    for task in tasks {
+                        self.add_task(task);
+                    }
+
+                    // Try to assign tasks to idle workers
+                    self.try_assign_tasks_to_idle_workers().await;
+                } else {
+                    debug!("No new tasks available");
+                }
+            }
+            Err(e) => {
+                warn!("Failed to poll tasks from beads: {}", e);
+            }
+        }
+    }
+
+    /// Try to assign queued tasks to any idle workers
+    async fn try_assign_tasks_to_idle_workers(&mut self) {
+        let idle_workers: Vec<String> = self
+            .registry
+            .idle_workers()
+            .map(|w| w.worker_id.clone())
+            .collect();
+
+        for worker_id in idle_workers {
+            if let Some(task) = self.task_queue.pop() {
+                self.assign_task_to_worker(&worker_id, task).await;
+            } else {
+                break;
             }
         }
     }
@@ -442,9 +565,12 @@ mod tests {
             default_wait_seconds: 30,
             worker_idle_timeout: 0,
             shutdown_timeout: 5,
+            worker_stale_timeout: 0,
+            stale_check_interval: 30,
+            poll_interval_seconds: 30,
         };
 
-        let orch = Orchestrator::new(config).await.unwrap();
+        let orch = Orchestrator::new(config, temp_dir.path()).await.unwrap();
         assert_eq!(orch.socket_path(), socket_path.as_path());
         assert_eq!(orch.registry.count(), 0);
         assert!(orch.task_queue.is_empty());

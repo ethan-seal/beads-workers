@@ -13,3 +13,4 @@ pub mod logs;
 pub mod status;
 pub mod orchestrator;
 pub mod metrics;
+pub mod task_poller;

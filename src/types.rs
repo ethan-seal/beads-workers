@@ -45,6 +45,13 @@ pub enum WorkerMessage {
         error: String,
         duration_ms: u64,
     },
+
+    /// Worker heartbeat to indicate it's still alive
+    #[serde(rename = "HEARTBEAT")]
+    Heartbeat {
+        worker_id: String,
+        timestamp: f64,
+    },
 }
 
 impl WorkerMessage {
@@ -77,12 +84,21 @@ impl WorkerMessage {
         }
     }
 
+    /// Create a new HEARTBEAT message
+    pub fn heartbeat(worker_id: String) -> Self {
+        WorkerMessage::Heartbeat {
+            worker_id,
+            timestamp: get_timestamp(),
+        }
+    }
+
     /// Get the worker_id from any message variant
     pub fn worker_id(&self) -> &str {
         match self {
             WorkerMessage::Ready { worker_id, .. } => worker_id,
             WorkerMessage::Done { worker_id, .. } => worker_id,
             WorkerMessage::Failed { worker_id, .. } => worker_id,
+            WorkerMessage::Heartbeat { worker_id, .. } => worker_id,
         }
     }
 
@@ -92,6 +108,7 @@ impl WorkerMessage {
             WorkerMessage::Ready { timestamp, .. } => *timestamp,
             WorkerMessage::Done { timestamp, .. } => *timestamp,
             WorkerMessage::Failed { timestamp, .. } => *timestamp,
+            WorkerMessage::Heartbeat { timestamp, .. } => *timestamp,
         }
     }
 }
@@ -315,6 +332,8 @@ pub struct WorkerInfo {
     pub registered_at: u64,
     /// When the worker last sent a message
     pub last_seen: u64,
+    /// When the last heartbeat was received
+    pub last_heartbeat: u64,
     /// Total tasks completed by this worker
     pub tasks_completed: u64,
     /// Total tasks failed by this worker
@@ -335,6 +354,7 @@ impl WorkerInfo {
             current_task: None,
             registered_at: now,
             last_seen: now,
+            last_heartbeat: now,
             tasks_completed: 0,
             tasks_failed: 0,
         }
@@ -346,6 +366,36 @@ impl WorkerInfo {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
+    }
+
+    /// Update the last heartbeat timestamp
+    pub fn update_heartbeat(&mut self) {
+        self.last_heartbeat = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        self.update_last_seen();
+    }
+
+    /// Check if worker is stale (hasn't sent heartbeat in given seconds)
+    pub fn is_stale(&self, timeout_seconds: u64) -> bool {
+        if timeout_seconds == 0 {
+            return false;
+        }
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        now.saturating_sub(self.last_heartbeat) > timeout_seconds
+    }
+
+    /// Get seconds since last heartbeat
+    pub fn seconds_since_heartbeat(&self) -> u64 {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        now.saturating_sub(self.last_heartbeat)
     }
 
     /// Assign a task to this worker
@@ -435,6 +485,34 @@ impl WorkerRegistry {
     pub fn count(&self) -> usize {
         self.workers.len()
     }
+
+    /// Find stale workers (haven't sent heartbeat in timeout seconds)
+    pub fn find_stale_workers(&self, timeout_seconds: u64) -> Vec<String> {
+        self.workers
+            .values()
+            .filter(|w| w.is_stale(timeout_seconds))
+            .map(|w| w.worker_id.clone())
+            .collect()
+    }
+
+    /// Get disconnected workers
+    pub fn disconnected_workers(&self) -> impl Iterator<Item = &WorkerInfo> {
+        self.workers.values().filter(|w| w.state == WorkerState::Disconnected)
+    }
+
+    /// Remove all disconnected workers
+    pub fn cleanup_disconnected(&mut self) -> Vec<String> {
+        let disconnected: Vec<String> = self
+            .disconnected_workers()
+            .map(|w| w.worker_id.clone())
+            .collect();
+
+        for worker_id in &disconnected {
+            self.workers.remove(worker_id);
+        }
+
+        disconnected
+    }
 }
 
 // ============================================================================
@@ -454,6 +532,13 @@ pub struct OrchestratorConfig {
     pub worker_idle_timeout: u64,
     /// Graceful shutdown timeout in seconds
     pub shutdown_timeout: u64,
+    /// Worker stale timeout in seconds (0 = disabled)
+    /// Workers that haven't sent a message in this time are considered stale
+    pub worker_stale_timeout: u64,
+    /// How often to check for stale workers in seconds
+    pub stale_check_interval: u64,
+    /// Task polling interval in seconds (how often to check bd ready)
+    pub poll_interval_seconds: u64,
 }
 
 impl Default for OrchestratorConfig {
@@ -464,6 +549,9 @@ impl Default for OrchestratorConfig {
             default_wait_seconds: 30,
             worker_idle_timeout: 0,
             shutdown_timeout: 10,
+            worker_stale_timeout: 300, // 5 minutes default
+            stale_check_interval: 30,   // Check every 30 seconds
+            poll_interval_seconds: 30,  // Poll bd ready every 30 seconds
         }
     }
 }

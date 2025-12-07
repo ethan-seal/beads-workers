@@ -124,6 +124,25 @@ pub enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+
+    /// View performance metrics
+    Metrics {
+        /// Output in JSON format
+        #[arg(long)]
+        json: bool,
+
+        /// Show detailed metrics
+        #[arg(long)]
+        detailed: bool,
+
+        /// Reset metrics
+        #[arg(long)]
+        reset: bool,
+
+        /// Archive current metrics
+        #[arg(long)]
+        archive: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

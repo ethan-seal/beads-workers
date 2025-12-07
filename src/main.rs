@@ -1,6 +1,7 @@
 mod cli;
 mod config;
 mod logs;
+mod metrics;
 mod status;
 mod types;
 mod ui;
@@ -101,6 +102,12 @@ async fn main() -> Result<()> {
 
         Commands::Config { action } => {
             handle_config_command(action, &config, &config_path)?;
+        }
+
+        Commands::Metrics { json, detailed, reset, archive } => {
+            info!("Viewing metrics (json={}, detailed={}, reset={}, archive={})",
+                json, detailed, reset, archive);
+            handle_metrics_command(&beads_dir, json, detailed, reset, archive)?;
         }
     }
 
@@ -232,6 +239,54 @@ fn handle_status_command(
         }
         Err(e) => {
             eprintln!("Error checking status: {}", e);
+            Err(e)
+        }
+    }
+}
+
+fn handle_metrics_command(
+    beads_dir: &Path,
+    json: bool,
+    detailed: bool,
+    reset: bool,
+    archive: bool,
+) -> Result<()> {
+    let store = metrics::MetricsStore::new(beads_dir);
+
+    if reset {
+        // Reset metrics
+        let new_metrics = metrics::WorkerMetrics::new();
+        store.save(&new_metrics)
+            .context("Failed to reset metrics")?;
+        println!("Metrics reset successfully");
+        return Ok(());
+    }
+
+    if archive {
+        // Archive current metrics
+        let metrics = store.load()
+            .context("Failed to load metrics")?;
+        store.archive(&metrics)
+            .context("Failed to archive metrics")?;
+        println!("Metrics archived successfully");
+        return Ok(());
+    }
+
+    // Load and display metrics
+    match store.load() {
+        Ok(metrics) => {
+            if json {
+                let json_str = serde_json::to_string_pretty(&metrics)
+                    .context("Failed to serialize metrics to JSON")?;
+                println!("{}", json_str);
+            } else {
+                let formatted = metrics::format_metrics(&metrics, detailed);
+                println!("{}", formatted);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("Error loading metrics: {}", e);
             Err(e)
         }
     }
