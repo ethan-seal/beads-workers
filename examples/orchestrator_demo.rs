@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
         worker_stale_timeout: 300,
         stale_check_interval: 30,
         poll_interval_seconds: 30,
+        ..Default::default()
     };
 
     println!("Socket path: {}", config.socket_path);

@@ -420,6 +420,15 @@ impl WorkerInfo {
         self.state = WorkerState::Idle;
         self.update_last_seen();
     }
+
+    /// Get duration since last activity (in Duration for easier comparison)
+    pub fn last_activity_elapsed(&self) -> std::time::Duration {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        std::time::Duration::from_secs(now.saturating_sub(self.last_seen))
+    }
 }
 
 /// Registry of all connected workers
@@ -519,6 +528,45 @@ impl WorkerRegistry {
 // Configuration
 // ============================================================================
 
+/// Worker scaling configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerScalingConfig {
+    /// Enable dynamic worker scaling
+    pub enabled: bool,
+    /// Minimum number of workers to maintain
+    pub min_workers: usize,
+    /// Maximum number of workers (overridden by OrchestratorConfig.max_workers if lower)
+    pub max_workers: usize,
+    /// Target queue size per worker (spawn new workers if exceeded)
+    pub target_queue_size_per_worker: usize,
+    /// Idle timeout in seconds before shutting down excess workers
+    pub idle_shutdown_timeout: u64,
+    /// How often to check for scaling opportunities in seconds
+    pub scale_check_interval: u64,
+    /// Initial backoff in seconds after spawning a worker
+    pub spawn_backoff_initial: u64,
+    /// Maximum backoff in seconds
+    pub spawn_backoff_max: u64,
+    /// Backoff multiplier for exponential backoff
+    pub spawn_backoff_multiplier: f64,
+}
+
+impl Default for WorkerScalingConfig {
+    fn default() -> Self {
+        WorkerScalingConfig {
+            enabled: false,
+            min_workers: 1,
+            max_workers: 10,
+            target_queue_size_per_worker: 3,
+            idle_shutdown_timeout: 300, // 5 minutes
+            scale_check_interval: 10,
+            spawn_backoff_initial: 1,
+            spawn_backoff_max: 60,
+            spawn_backoff_multiplier: 2.0,
+        }
+    }
+}
+
 /// Orchestrator configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrchestratorConfig {
@@ -539,6 +587,8 @@ pub struct OrchestratorConfig {
     pub stale_check_interval: u64,
     /// Task polling interval in seconds (how often to check bd ready)
     pub poll_interval_seconds: u64,
+    /// Worker scaling configuration
+    pub scaling: WorkerScalingConfig,
 }
 
 impl Default for OrchestratorConfig {
@@ -552,6 +602,7 @@ impl Default for OrchestratorConfig {
             worker_stale_timeout: 300, // 5 minutes default
             stale_check_interval: 30,   // Check every 30 seconds
             poll_interval_seconds: 30,  // Poll bd ready every 30 seconds
+            scaling: WorkerScalingConfig::default(),
         }
     }
 }
@@ -945,6 +996,7 @@ mod tests {
             worker_stale_timeout: 300,
             stale_check_interval: 30,
             poll_interval_seconds: 60,
+            scaling: WorkerScalingConfig::default(),
         };
 
         assert_eq!(config.socket_path, "/tmp/test.sock");

@@ -568,6 +568,7 @@ mod tests {
             worker_stale_timeout: 0,
             stale_check_interval: 30,
             poll_interval_seconds: 30,
+            scaling: crate::types::WorkerScalingConfig::default(),
         };
 
         let orch = Orchestrator::new(config, temp_dir.path()).await.unwrap();
