@@ -282,6 +282,11 @@ cmd_status() {
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     bd stats 2>/dev/null || echo "Could not fetch stats"
 
+    # Count workable tasks (leaf tasks with no dependents)
+    local workable_count=$(bd list --status=open --json 2>/dev/null | jq '[.[] | select(.dependent_count == 0)] | length')
+    echo ""
+    echo "🎯 Workable Tasks: $workable_count (leaf tasks with no dependents)"
+
     if [ "$worker_count" -gt 0 ]; then
         echo ""
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
