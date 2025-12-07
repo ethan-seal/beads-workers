@@ -22,3 +22,9 @@ Thumbs.db
 # Test artifacts
 test-project/
 tmp/
+
+# Rust
+target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
