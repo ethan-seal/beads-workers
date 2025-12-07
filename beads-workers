@@ -106,27 +106,37 @@ worker_process() {
         fi
 
         # Extract issue IDs
-        mapfile -t issue_ids < <(echo "$ready_output" | grep -oP '\w+-\w+-[a-z0-9]{3}' || true)
+        mapfile -t all_issue_ids < <(echo "$ready_output" | grep -oP '\w+-\w+-[a-z0-9]{3}' || true)
 
-        if [ ${#issue_ids[@]} -eq 0 ]; then
+        if [ ${#all_issue_ids[@]} -eq 0 ]; then
             log "Could not parse issue IDs, waiting 30s..."
             sleep 30
             continue
         fi
 
-        # Pick random issue
+        # Filter out epics (epics are containers, not work items)
+        issue_ids=()
+        for candidate_id in "${all_issue_ids[@]}"; do
+            issue_type=$(bd show "$candidate_id" --json 2>/dev/null | jq -r '.[0].type // "unknown"')
+            if [ "$issue_type" != "epic" ]; then
+                issue_ids+=("$candidate_id")
+            else
+                log "Filtering out epic $candidate_id from available work"
+            fi
+        done
+
+        # Check if any non-epic issues are available
+        if [ ${#issue_ids[@]} -eq 0 ]; then
+            log "Only epics available (no tasks/bugs/features ready), waiting 30s..."
+            sleep 30
+            continue
+        fi
+
+        # Pick random issue from non-epic issues
         random_index=$((RANDOM % ${#issue_ids[@]}))
         issue_id="${issue_ids[$random_index]}"
 
         log "Attempting to claim issue: $issue_id"
-
-        # Check if it's an epic (epics should not be processed by workers)
-        issue_type=$(bd show "$issue_id" --json 2>/dev/null | jq -r '.[0].type // "unknown"')
-        if [ "$issue_type" = "epic" ]; then
-            log "Skipping epic $issue_id (epics are containers, not work items)"
-            sleep 2
-            continue
-        fi
 
         # Claim the issue
         if ! bd update "$issue_id" --status=in_progress 2>&1; then
