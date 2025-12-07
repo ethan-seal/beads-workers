@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/run/current-system/sw/bin/bash
 # Beads Workers - Concurrent task processing system for beads
 # Usage: beads-workers <command> [options]
 
