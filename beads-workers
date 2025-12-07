@@ -120,9 +120,26 @@ worker_process() {
 
         log "Attempting to claim issue: $issue_id"
 
+        # Check if already claimed (race condition prevention)
+        current_status=$(bd show "$issue_id" --json 2>/dev/null | jq -r '.[0].status')
+        if [ "$current_status" != "open" ]; then
+            log "Issue $issue_id already claimed (status: $current_status), retrying..."
+            sleep 2
+            continue
+        fi
+
         # Claim the issue
         if ! bd update "$issue_id" --status=in_progress 2>&1; then
-            log "Failed to claim $issue_id (race condition), retrying..."
+            log "Failed to claim $issue_id (update failed), retrying..."
+            sleep 2
+            continue
+        fi
+
+        # Verify we actually got it (double-check after small delay)
+        sleep 0.5
+        verified_status=$(bd show "$issue_id" --json 2>/dev/null | jq -r '.[0].status')
+        if [ "$verified_status" != "in_progress" ]; then
+            log "Lost race for $issue_id (another worker got it), retrying..."
             sleep 2
             continue
         fi
