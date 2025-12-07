@@ -11,3 +11,5 @@ pub mod ipc;
 pub mod server;
 pub mod logs;
 pub mod status;
+pub mod orchestrator;
+pub mod metrics;
