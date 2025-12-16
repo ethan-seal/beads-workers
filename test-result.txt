@@ -1,0 +1,11 @@
+# Test Output
+
+Task processed at: Tue Dec 16 00:29:47 UTC 2025
+
+Task description:
+Task: Auto-reset failed tasks when they appear in beads ready list
+
+Currently when a task fails and enters failed_needs_attention state in the orchestrator DB, but remains open in beads, it creates a mismatch. The orchestrator polls beads and gets the task in the ready list, but then fails to assign it because the DB shows failed_needs_attention instead of ready. This causes the error: 'Task X is not in ready state (current: failed_needs_attention)'.
+Solution: In sync_ready_tasks_to_db(), check if existing tasks are in failed_needs_attention state and auto-reset them to ready when they appear in beads ready list. This makes the orchestrator respect beads as the source of truth for task readiness.
+Alternative: Filter out failed_needs_attention tasks before assignment, but this would prevent retries unless manually reset via CLI.
+
