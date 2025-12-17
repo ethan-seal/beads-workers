@@ -1,0 +1,9 @@
+# Test Output
+
+Task processed at: Wed Dec 17 22:10:03 UTC 2025
+
+Task description:
+Task: Disable App button when no app ports configured
+
+The App button in container cards doesn't do anything useful since no app is configured. Should disable the button or hide it when app_ports is empty/null to avoid user confusion.
+
